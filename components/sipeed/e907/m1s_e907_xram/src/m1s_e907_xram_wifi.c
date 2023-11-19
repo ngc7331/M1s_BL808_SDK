@@ -305,6 +305,7 @@ static int xram_wifi_upload_stream(m1s_xram_wifi_t *op)
 }
 
 #define HTTP_REQUEST_BUFSIZE 1024
+#define HTTP_REQUEST_ENABLE_LOG
 static int xram_wifi_http_request(m1s_xram_wifi_t *op)
 {
     struct xram_hdr hdr = {
@@ -314,13 +315,17 @@ static int xram_wifi_http_request(m1s_xram_wifi_t *op)
     };
     m1s_xram_wifi_t resp = {
         .op = XRAM_WIFI_HTTP_RESPONSE,
-        .http_response.len = 0,
-        .http_response.error = 0,
+        .http_response = {
+            .version = {0, 0},
+            .code = 0,
+            .type = {0},
+            .len  = 0,
+        }
     };
     uint32_t bytes;
 
     /* alloc buffer */
-    uint8_t *buf = pvPortMalloc(HTTP_REQUEST_BUFSIZE);
+    char *buf = pvPortMalloc(HTTP_REQUEST_BUFSIZE);
     if (NULL == buf) {
         printf("xram_wifi_http_request: alloc buffer error\r\n");
         hdr.err = WIFI_OP_ERR;
@@ -367,9 +372,11 @@ static int xram_wifi_http_request(m1s_xram_wifi_t *op)
     }
 
     // construct HTTP packet
-    ret = snprintf((char *) buf, HTTP_REQUEST_BUFSIZE,
+    // TODO: support PUT/OPTION/DELETE
+    // TODO: headers
+    ret = snprintf(buf, HTTP_REQUEST_BUFSIZE,
         "%s %s HTTP/1.1\r\nHOST: %s\r\n\r\n\r\n\r\n",
-        "GET", // TODO: support PUT/OPTION/DELETE
+        "GET",
         op->http_request.uri, op->http_request.host
     );
 
@@ -388,19 +395,44 @@ static int xram_wifi_http_request(m1s_xram_wifi_t *op)
         goto fail;
     }
 
+#ifdef HTTP_REQUEST_ENABLE_LOG
+    printf("xram_wifi_http_request: recv %d bytes\r\n", ret);
+#endif
+
     // close socket
     closesocket(sock);
 
+    // destruct HTTP packet
+    // TODO: cookies, etc.
+    char *pbuf = buf;
+    sscanf(buf, "HTTP/%hd.%hd %d", &resp.http_response.version.major, &resp.http_response.version.minor, &resp.http_response.code);
+#ifdef HTTP_REQUEST_ENABLE_LOG
+    printf("xram_wifi_http_request: found HTTP version %hd.%hd, status %d\r\n", resp.http_response.version.major, resp.http_response.version.minor, resp.http_response.code);
+#endif
+    do {
+        while (*(pbuf++) != '\n') ; // goto next line
+        if (sscanf(pbuf, "Content-Type: %s\r\n", resp.http_response.type) == 1) {
+#ifdef HTTP_REQUEST_ENABLE_LOG
+            printf("xram_wifi_http_request: found Content-Type: %s\r\n", resp.http_response.type);
+#endif
+        }
+        if (sscanf(pbuf, "Content-Length: %d\r\n", &resp.http_response.len) == 1) {
+#ifdef HTTP_REQUEST_ENABLE_LOG
+            printf("xram_wifi_http_request: found Content-Length: %d\r\n", resp.http_response.len);
+#endif
+        }
+    } while (*pbuf != '\r'); // until empty line
+    pbuf += 2; // skip empty line
+
     // pass response to C906 core through XRAM
     hdr.len = sizeof(m1s_xram_wifi_t);
-    resp.http_response.len = ret;
     bytes  = XRAMRingWrite(XRAM_OP_QUEUE, &hdr, sizeof(struct xram_hdr));
     bytes += XRAMRingWrite(XRAM_OP_QUEUE, &resp, sizeof(m1s_xram_wifi_t));
-    bytes += XRAMRingWrite(XRAM_OP_QUEUE, buf, ret);
+    bytes += XRAMRingWrite(XRAM_OP_QUEUE, pbuf, resp.http_response.len);
 
     // free buffer
     vPortFree(buf);
-    if (bytes != sizeof(struct xram_hdr) + sizeof(m1s_xram_wifi_t) + ret) {
+    if (bytes != sizeof(struct xram_hdr) + sizeof(m1s_xram_wifi_t) + resp.http_response.len) {
         printf("xram ring write err.\r\n");
         return WIFI_OP_ERR;
     }
@@ -413,7 +445,6 @@ fail:
 
     // send response
     hdr.len = sizeof(m1s_xram_wifi_t);
-    resp.http_response.error = 1;
     bytes  = XRAMRingWrite(XRAM_OP_QUEUE, &hdr, sizeof(struct xram_hdr));
     bytes += XRAMRingWrite(XRAM_OP_QUEUE, &resp, sizeof(m1s_xram_wifi_t));
 

@@ -34,13 +34,19 @@ struct m1s_xram_wifi {
         struct {
             char host[32];
             uint16_t port;
-            char uri[64];
+            char uri[80];
         } __attribute__((packed)) http_request;
 
         struct {
-            int len;
-            int error;
-        }  __attribute__((packed)) http_response;
+            struct {
+                short major;
+                short minor;
+            } __attribute__((packed)) version;
+            int code;     // http status code
+            char type[32]; // content-type
+            int len;       // content-length
+            // content will be sent after this struct
+        } __attribute__((packed)) http_response;
     };
 } __attribute__((packed));
 typedef struct m1s_xram_wifi m1s_xram_wifi_t;

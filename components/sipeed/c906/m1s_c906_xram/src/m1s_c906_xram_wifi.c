@@ -85,6 +85,7 @@ static enum {
 } http_request_status = HTTP_REQUEST_STATUS_IDLE;
 static char *http_response_buf = NULL;
 static int http_response_len = 0;
+static int http_response_code = 0;
 
 int m1s_xram_wifi_http_request(const char *host, uint16_t port, const char *uri) {
     if (http_request_status != HTTP_REQUEST_STATUS_IDLE) return -1;
@@ -96,26 +97,26 @@ int m1s_xram_wifi_http_request(const char *host, uint16_t port, const char *uri)
     return m1s_xram_wifi_operation(&op, XRAM_WIFI_HTTP_REQUEST);
 }
 
-int m1s_xram_wifi_http_response(char *buf, int bufsize) {
+int m1s_xram_wifi_http_response(char *buf, int *len) {
     if (http_request_status == HTTP_REQUEST_STATUS_IDLE) {
         printf("m1s_xram_wifi_http_response: still IDLE, do not call this before m1s_xram_wifi_http_request()\r\n");
-        return 0;
+        return -1;
     } else if (http_request_status == HTTP_REQUEST_STATUS_SENT) {
         // printf("m1s_xram_wifi_http_response: waiting for response\r\n");
-        return -1;
+        return 0;
     } else if (http_request_status == HTTP_REQUEST_STATUS_ERROR) {
         printf("m1s_xram_wifi_http_response: ERROR acknowledged\r\n");
         http_request_status = HTTP_REQUEST_STATUS_IDLE;
-        return 0;
+        return -1;
     }
 
-    int nread = bufsize < http_response_len ? bufsize : http_response_len;
-    strncpy(buf, http_response_buf, nread);
+    *len = *len < http_response_len ? *len : http_response_len;
+    strncpy(buf, http_response_buf, *len);
 
     http_response_len = 0;
     vPortFree(http_response_buf);
     http_request_status = HTTP_REQUEST_STATUS_IDLE;
-    return nread;
+    return http_response_code;
 }
 /****************************************************************************
  *                               Recv Handle
@@ -133,14 +134,15 @@ static int xram_wifi_http_response(m1s_xram_wifi_t *op) {
     }
 
     /* respond */
-    if (op->http_response.error) {
+    if (op->http_response.code == 0) {
         http_request_status = HTTP_REQUEST_STATUS_ERROR;
         printf("xram_wifi_http_response: error occured\r\n");
         goto ok;
     }
 
     http_response_len = op->http_response.len;
-    printf("xram_wifi_http_response: received %d\r\n", http_response_len);
+    http_response_code = op->http_response.code;
+    printf("xram_wifi_http_response: received %d bytes\r\n", http_response_len);
     http_response_buf = pvPortMalloc(http_response_len);
     if (http_response_buf == NULL) {
         printf("xram_wifi_http_response: alloc buffer error\r\n");
