@@ -333,7 +333,9 @@ static int touch_read(uint16_t *x, uint16_t *y)
     pos_x = (pos_x << 8) | buf[3];
     uint16_t pos_y = buf[4] & 0x0F;
     pos_y = (pos_y << 8) | buf[5];
+#ifdef LV_PORT_PRINT_CLICK_POS
     printf("pos: (%-3u, %-3u)[%u]\r\n", pos_x, pos_y, status);
+#endif
     if (status != 8) {
         return 0;
     }
