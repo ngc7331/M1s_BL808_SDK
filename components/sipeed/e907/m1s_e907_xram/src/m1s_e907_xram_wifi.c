@@ -12,6 +12,7 @@
 #include <wifi_mgmr_ext.h>
 #include <xram.h>
 #include "bl_cam.h"
+#include <lwip/api.h>
 #include <lwip/tcpip.h>
 #include <lwip/sockets.h>
 #include <lwip/tcp.h>
@@ -303,6 +304,128 @@ static int xram_wifi_upload_stream(m1s_xram_wifi_t *op)
     }
 }
 
+#define HTTP_REQUEST_BUFSIZE 1024
+static int xram_wifi_http_request(m1s_xram_wifi_t *op)
+{
+    struct xram_hdr hdr = {
+        .type = M1S_XRAM_TYPE_WIFI,
+        .err  = WIFI_OP_OK,
+        .len  = 0,
+    };
+    m1s_xram_wifi_t resp = {
+        .op = XRAM_WIFI_HTTP_RESPONSE,
+        .http_response.len = 0,
+        .http_response.error = 0,
+    };
+    uint32_t bytes;
+
+    /* alloc buffer */
+    uint8_t *buf = pvPortMalloc(HTTP_REQUEST_BUFSIZE);
+    if (NULL == buf) {
+        printf("xram_wifi_http_request: alloc buffer error\r\n");
+        hdr.err = WIFI_OP_ERR;
+        if (XRAMRingWrite(XRAM_OP_QUEUE, &hdr, sizeof(struct xram_hdr)) != sizeof(struct xram_hdr)) {
+            printf("xram ring write err.\r\n");
+            return WIFI_OP_ERR;
+        }
+        return WIFI_OP_OK;
+    }
+
+    /* respond */
+    if (XRAMRingWrite(XRAM_OP_QUEUE, &hdr, sizeof(struct xram_hdr)) != sizeof(struct xram_hdr)) {
+        printf("xram ring write err.\r\n");
+        return WIFI_OP_ERR;
+    }
+
+    /* send real http request */
+    // resolve host ip
+    char *host_ip;
+#ifdef LWIP_DNS
+    ip4_addr_t dns_result;
+    netconn_gethostbyname(op->http_request.host, &dns_result);
+    host_ip = ip_ntoa(&dns_result);
+#else
+    host_ip = op->http_request.host;
+#endif
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        printf("xram_wifi_http_request: open socket error\r\n");
+        goto fail;
+    }
+
+    struct sockaddr_in host_addr;
+    host_addr.sin_family = AF_INET;
+    host_addr.sin_addr.s_addr = inet_addr(host_ip);
+    host_addr.sin_port = htons(op->http_request.port == 0 ? 80 : op->http_request.port);
+    memset(&(host_addr.sin_zero), 0, sizeof(host_addr.sin_zero));
+
+    int ret = connect(sock, (struct sockaddr *)&host_addr, sizeof(struct sockaddr));
+    if (ret < 0) {
+        printf("xram_wifi_http_request: connect failed(%d)\r\n", ret);
+        goto fail;
+    }
+
+    // construct HTTP packet
+    ret = snprintf((char *) buf, HTTP_REQUEST_BUFSIZE,
+        "%s %s HTTP/1.1\r\nHOST: %s\r\n\r\n\r\n\r\n",
+        "GET", // TODO: support PUT/OPTION/DELETE
+        op->http_request.uri, op->http_request.host
+    );
+
+    // send
+    if ((ret = write(sock, buf, ret)) < 0) {
+        printf("xram_wifi_http_request: write failed\r\n");
+        goto fail;
+    }
+
+    // clear buffer
+    memset(buf, 0, HTTP_REQUEST_BUFSIZE);
+
+    // recv
+    if ((ret = recv(sock, buf, HTTP_REQUEST_BUFSIZE, 0)) < 0) {
+        printf("xram_wifi_http_request: recv failed\r\n");
+        goto fail;
+    }
+
+    // close socket
+    closesocket(sock);
+
+    // pass response to C906 core through XRAM
+    hdr.len = sizeof(m1s_xram_wifi_t);
+    resp.http_response.len = ret;
+    bytes  = XRAMRingWrite(XRAM_OP_QUEUE, &hdr, sizeof(struct xram_hdr));
+    bytes += XRAMRingWrite(XRAM_OP_QUEUE, &resp, sizeof(m1s_xram_wifi_t));
+    bytes += XRAMRingWrite(XRAM_OP_QUEUE, buf, ret);
+
+    // free buffer
+    vPortFree(buf);
+    if (bytes != sizeof(struct xram_hdr) + sizeof(m1s_xram_wifi_t) + ret) {
+        printf("xram ring write err.\r\n");
+        return WIFI_OP_ERR;
+    }
+    return WIFI_OP_OK;
+
+    /* failed */
+fail:
+    // close socket
+    closesocket(sock);
+
+    // send response
+    hdr.len = sizeof(m1s_xram_wifi_t);
+    resp.http_response.error = 1;
+    bytes  = XRAMRingWrite(XRAM_OP_QUEUE, &hdr, sizeof(struct xram_hdr));
+    bytes += XRAMRingWrite(XRAM_OP_QUEUE, &resp, sizeof(m1s_xram_wifi_t));
+
+    // free buffer
+    vPortFree(buf);
+    if (bytes != sizeof(struct xram_hdr) + sizeof(m1s_xram_wifi_t)) {
+        printf("xram ring write err.\r\n");
+        return WIFI_OP_ERR;
+    }
+    return WIFI_OP_OK;
+}
+
 void m1s_e907_xram_wifi_operation_handle(uint32_t len)
 {
     m1s_xram_wifi_t obj_op;
@@ -329,6 +452,10 @@ void m1s_e907_xram_wifi_operation_handle(uint32_t len)
             }
             case XRAM_WIFI_UPLOAD_STREAM: {
                 xram_wifi_upload_stream(&obj_op);
+                break;
+            }
+            case XRAM_WIFI_HTTP_REQUEST: {
+                xram_wifi_http_request(&obj_op);
                 break;
             }
             default: {

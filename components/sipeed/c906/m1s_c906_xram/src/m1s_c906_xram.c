@@ -5,6 +5,7 @@
 #include <xram.h>
 
 // #include "m1s_c906_xram_uartp.h"
+#include "m1s_c906_xram_wifi.h"
 #include "m1s_common_xram.h"
 
 static SemaphoreHandle_t s_mutex = NULL;
@@ -90,6 +91,10 @@ void m1s_c906_xram_operation_handle()
         switch (rx_hdr.type) {
             case M1S_XRAM_TYPE_UARTP: {
                 // m1s_c906_xram_uartp_operation_handle(rx_hdr.len);
+                break;
+            }
+            case M1S_XRAM_TYPE_WIFI: {
+                m1s_c906_xram_wifi_operation_handle(rx_hdr.len);
                 break;
             }
             default: {

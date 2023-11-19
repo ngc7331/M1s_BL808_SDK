@@ -14,6 +14,8 @@ enum wifi_operation {
     XRAM_WIFI_CONNECT,
     XRAM_WIFI_DISCONNECT,
     XRAM_WIFI_UPLOAD_STREAM,
+    XRAM_WIFI_HTTP_REQUEST,
+    XRAM_WIFI_HTTP_RESPONSE,
 };
 
 struct m1s_xram_wifi {
@@ -28,6 +30,17 @@ struct m1s_xram_wifi {
             uint32_t port;
             char ip[16];
         } __attribute__((packed)) upload_stream;
+
+        struct {
+            char host[32];
+            uint16_t port;
+            char uri[64];
+        } __attribute__((packed)) http_request;
+
+        struct {
+            int len;
+            int error;
+        }  __attribute__((packed)) http_response;
     };
 } __attribute__((packed));
 typedef struct m1s_xram_wifi m1s_xram_wifi_t;

@@ -10,5 +10,7 @@ int m1s_xram_wifi_deinit(void);
 int m1s_xram_wifi_connect(char *ssid, char *passwd);
 int m1s_xram_wifi_disconnect(void);
 int m1s_xram_wifi_upload_stream(char *ip, uint32_t port);
+int m1s_xram_wifi_http_request(const char *host, uint16_t port, const char *uri);
+int m1s_xram_wifi_http_response(char *buf, int bufsize);
 void m1s_c906_xram_wifi_operation_handle(uint32_t len);
 #endif
