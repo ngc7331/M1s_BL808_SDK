@@ -359,6 +359,10 @@ static int xram_wifi_http_request(m1s_xram_wifi_t *op)
         goto fail;
     }
 
+#ifdef HTTP_REQUEST_ENABLE_LOG
+    printf("xram_wifi_http_request: connecting to %s:%d\r\n", host_ip, op->http_request.port == 0 ? 80 : op->http_request.port);
+#endif
+
     struct sockaddr_in host_addr;
     host_addr.sin_family = AF_INET;
     host_addr.sin_addr.s_addr = inet_addr(host_ip);
