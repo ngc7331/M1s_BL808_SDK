@@ -110,8 +110,15 @@ int m1s_xram_wifi_http_response(char *buf, int *len) {
         return -1;
     }
 
-    *len = *len < http_response_len ? *len : http_response_len;
-    strncpy(buf, http_response_buf, *len);
+    if (*len <= http_response_len) {
+        printf("m1s_xram_wifi_http_response: buffer too small, %d/%d bytes copied\r\n", *len-1, http_response_len);
+        strncpy(buf, http_response_buf, *len - 1);
+        buf[*len - 1] = '\0';
+    } else { // *len >= http_response_len + 1 (NULL terminated)
+        printf("m1s_xram_wifi_http_response: %d bytes copied\r\n", *len);
+        strncpy(buf, http_response_buf, (*len = http_response_len));
+        buf[http_response_len] = '\0';
+    }
 
     http_response_len = 0;
     vPortFree(http_response_buf);
