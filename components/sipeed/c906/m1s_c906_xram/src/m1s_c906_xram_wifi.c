@@ -77,19 +77,21 @@ int m1s_xram_wifi_upload_stream(char *ip, uint32_t port)
     return m1s_xram_wifi_operation(&op, XRAM_WIFI_UPLOAD_STREAM);
 }
 
-static enum {
-    HTTP_REQUEST_STATUS_IDLE,
-    HTTP_REQUEST_STATUS_SENT,
-    HTTP_REQUEST_STATUS_HOLD,
-    HTTP_REQUEST_STATUS_ERROR
-} http_request_status = HTTP_REQUEST_STATUS_IDLE;
+typedef enum {
+    FSM_STATE_IDLE,
+    FSM_STATE_SENT,
+    FSM_STATE_HOLD,
+    FSM_STATE_ERROR
+} fsm_state_t;
+
+static fsm_state_t http_request_status = FSM_STATE_IDLE;
 static char *http_response_buf = NULL;
 static int http_response_len = 0;
 static int http_response_code = 0;
 
 int m1s_xram_wifi_http_request(const char *host, uint16_t port, const char *uri) {
-    if (http_request_status != HTTP_REQUEST_STATUS_IDLE) return -1;
-    http_request_status = HTTP_REQUEST_STATUS_SENT;
+    if (http_request_status != FSM_STATE_IDLE) return -1;
+    http_request_status = FSM_STATE_SENT;
     m1s_xram_wifi_t op = {0};
     strncpy(op.http_request.host, host, sizeof(op.http_request.host));
     op.http_request.port = port;
@@ -98,15 +100,15 @@ int m1s_xram_wifi_http_request(const char *host, uint16_t port, const char *uri)
 }
 
 int m1s_xram_wifi_http_response(char *buf, int *len) {
-    if (http_request_status == HTTP_REQUEST_STATUS_IDLE) {
+    if (http_request_status == FSM_STATE_IDLE) {
         printf("m1s_xram_wifi_http_response: still IDLE, do not call this before m1s_xram_wifi_http_request()\r\n");
         return -1;
-    } else if (http_request_status == HTTP_REQUEST_STATUS_SENT) {
+    } else if (http_request_status == FSM_STATE_SENT) {
         // printf("m1s_xram_wifi_http_response: waiting for response\r\n");
         return 0;
-    } else if (http_request_status == HTTP_REQUEST_STATUS_ERROR) {
+    } else if (http_request_status == FSM_STATE_ERROR) {
         printf("m1s_xram_wifi_http_response: ERROR acknowledged\r\n");
-        http_request_status = HTTP_REQUEST_STATUS_IDLE;
+        http_request_status = FSM_STATE_IDLE;
         return -1;
     }
 
@@ -122,9 +124,43 @@ int m1s_xram_wifi_http_response(char *buf, int *len) {
 
     http_response_len = 0;
     vPortFree(http_response_buf);
-    http_request_status = HTTP_REQUEST_STATUS_IDLE;
+    http_request_status = FSM_STATE_IDLE;
     return http_response_code;
 }
+
+static fsm_state_t get_ip_status = FSM_STATE_IDLE;
+static uint32_t get_ip_ip = 0;
+static uint32_t get_ip_mask = 0;
+static uint32_t get_ip_gw = 0;
+
+int m1s_xram_wifi_get_ip_request(void) {
+    m1s_xram_wifi_t op = {0};
+    get_ip_status = FSM_STATE_SENT;
+    return m1s_xram_wifi_operation(&op, XRAM_WIFI_GET_IP_REQUEST);
+}
+
+int m1s_xram_wifi_get_ip_response(uint32_t *ip, uint32_t *mask, uint32_t *gw) {
+    if (get_ip_status == FSM_STATE_IDLE) {
+        printf("m1s_xram_wifi_get_ip_response: still IDLE, do not call this before m1s_xram_wifi_get_ip_request()\r\n");
+        return -1;
+    } else if (get_ip_status == FSM_STATE_SENT) {
+        // printf("m1s_xram_wifi_get_ip_response: waiting for response\r\n");
+        return 0;
+    } else if (get_ip_status == FSM_STATE_ERROR) {
+        printf("m1s_xram_wifi_get_ip_response: ERROR acknowledged\r\n");
+        get_ip_status = FSM_STATE_IDLE;
+        return -1;
+    }
+
+    if (ip) *ip = get_ip_ip;
+    if (mask) *mask = get_ip_mask;
+    if (gw) *gw = get_ip_gw;
+
+    get_ip_status = FSM_STATE_IDLE;
+    return 1;
+}
+
+
 /****************************************************************************
  *                               Recv Handle
  ****************************************************************************/
@@ -135,14 +171,14 @@ static int xram_wifi_http_response(m1s_xram_wifi_t *op) {
         .len  = 0,
     };
 
-    if (http_request_status != HTTP_REQUEST_STATUS_SENT) {
+    if (http_request_status != FSM_STATE_SENT) {
         printf("xram_wifi_http_response: http_request_status != SENT\r\n");
         goto fail;
     }
 
     /* respond */
     if (op->http_response.code == 0) {
-        http_request_status = HTTP_REQUEST_STATUS_ERROR;
+        http_request_status = FSM_STATE_ERROR;
         printf("xram_wifi_http_response: error occured\r\n");
         goto ok;
     }
@@ -156,10 +192,40 @@ static int xram_wifi_http_response(m1s_xram_wifi_t *op) {
         goto fail;
     }
     XRAMRingRead(XRAM_OP_QUEUE, http_response_buf, http_response_len);
-    http_request_status = HTTP_REQUEST_STATUS_HOLD;
+    http_request_status = FSM_STATE_HOLD;
 
     /* respond */
 ok:
+    hdr.err = WIFI_OP_OK;
+
+fail:
+    if (XRAMRingWrite(XRAM_OP_QUEUE, &hdr, sizeof(struct xram_hdr)) != sizeof(struct xram_hdr)) {
+        printf("xram ring write err.\r\n");
+        return WIFI_OP_ERR;
+    }
+    return WIFI_OP_OK;
+}
+
+static int xram_wifi_get_ip_response(m1s_xram_wifi_t *op) {
+    struct xram_hdr hdr = {
+        .type = M1S_XRAM_TYPE_WIFI,
+        .err  = WIFI_OP_ERR,
+        .len  = 0,
+    };
+
+    if (get_ip_status != FSM_STATE_SENT) {
+        printf("xram_wifi_get_ip_response: get_ip_status != SENT\r\n");
+        goto fail;
+    }
+
+    /* respond */
+    get_ip_ip = op->ip.ip;
+    get_ip_mask = op->ip.mask;
+    get_ip_gw = op->ip.gw;
+    printf("xram_wifi_get_ip_response: received ip=%08x mask=%08x gw=%08x\r\n", get_ip_ip, get_ip_mask, get_ip_gw);
+    get_ip_status = FSM_STATE_HOLD;
+
+    /* respond */
     hdr.err = WIFI_OP_OK;
 
 fail:
@@ -180,6 +246,9 @@ void m1s_c906_xram_wifi_operation_handle(uint32_t len)
         switch (obj_op.op) {
             case XRAM_WIFI_HTTP_RESPONSE:
                 xram_wifi_http_response(&obj_op);
+                break;
+            case XRAM_WIFI_GET_IP_RESPONSE:
+                xram_wifi_get_ip_response(&obj_op);
                 break;
             default: {
                 printf("xram wifi operate type err.\r\n");

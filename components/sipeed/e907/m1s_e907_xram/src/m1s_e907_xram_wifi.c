@@ -461,6 +461,44 @@ fail:
     return WIFI_OP_OK;
 }
 
+static int xram_wifi_get_ip(m1s_xram_wifi_t *op)
+{
+    struct xram_hdr hdr = {
+        .type = M1S_XRAM_TYPE_WIFI,
+        .err  = WIFI_OP_OK,
+        .len  = 0,
+    };
+    m1s_xram_wifi_t resp = {
+        .op = XRAM_WIFI_GET_IP_RESPONSE,
+        .ip = {
+            .ip = 0,
+            .mask = 0,
+            .gw = 0,
+        }
+    };
+    uint32_t bytes;
+
+    /* respond */
+    bytes = XRAMRingWrite(XRAM_OP_QUEUE, &hdr, sizeof(struct xram_hdr));
+    if (bytes != sizeof(struct xram_hdr)) {
+        printf("xram ring write err.\r\n");
+        return WIFI_OP_ERR;
+    }
+
+    /* get ip */
+    wifi_mgmr_sta_ip_get(&resp.ip.ip, &resp.ip.gw, &resp.ip.mask);
+
+    /* send result */
+    hdr.len = sizeof(m1s_xram_wifi_t);
+    bytes  = XRAMRingWrite(XRAM_OP_QUEUE, &hdr, sizeof(struct xram_hdr));
+    bytes += XRAMRingWrite(XRAM_OP_QUEUE, &resp, sizeof(m1s_xram_wifi_t));
+    if (bytes != sizeof(struct xram_hdr) + sizeof(m1s_xram_wifi_t)) {
+        printf("xram ring write err.\r\n");
+        return WIFI_OP_ERR;
+    }
+    return WIFI_OP_OK;
+}
+
 void m1s_e907_xram_wifi_operation_handle(uint32_t len)
 {
     m1s_xram_wifi_t obj_op;
@@ -491,6 +529,10 @@ void m1s_e907_xram_wifi_operation_handle(uint32_t len)
             }
             case XRAM_WIFI_HTTP_REQUEST: {
                 xram_wifi_http_request(&obj_op);
+                break;
+            }
+            case XRAM_WIFI_GET_IP_REQUEST: {
+                xram_wifi_get_ip(&obj_op);
                 break;
             }
             default: {
